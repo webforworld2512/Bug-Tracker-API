@@ -466,27 +466,6 @@ On `POST /reports`, after successfully creating a report:
     *   `details` from Zod’s issue list (field-level error information).
         
 
-### 7.4 Linters, Static Analysis, Testing Philosophy
-
-*   Linting & formatting:
-    
-    *   Intended: ESLint + Prettier configuration for consistent style and basic static checks.
-        
-*   Static analysis:
-    
-    *   TypeScript compiler acts as the primary static analysis tool.
-        
-    *   In CI, the project would run `tsc --noEmit` and linting.
-        
-*   Testing philosophy (to be implemented in a full project):
-    
-    *   Unit tests: `ReportStore`, auth middleware, business rules (e.g., severity escalation).
-        
-    *   Integration tests: HTTP-level tests using Jest + Supertest for each endpoint (create, update, delete, upload, download).
-        
-    *   End-to-end smoke tests: create report → add entry → upload attachment → fetch GET with `include=entries,attachments`.
-        
-
 * * *
 
 ## 8\. Scaling & Observability
@@ -656,3 +635,4 @@ Admin escalating severity to critical (custom business rule):
 *   Plug in a real queue for async jobs and a real AV scanner for attachments.
     
 *   Add automated tests (unit + integration) and CI/CD pipeline with lint/typecheck/test stages.
+
