@@ -2,13 +2,35 @@ import express, { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import path from 'path';
 import fs from 'fs';
-import multer from 'multer';
+import multer, { FileFilterCallback } from 'multer';
 import * as jwt from 'jsonwebtoken';
 import { ReportStore, Report } from '../models/report';
 import { requireAuth, requireRole, JWT_SECRET } from '../middleware/auth';
 
 const router = express.Router();
-const upload = multer({ dest: 'uploads/' });
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
+const ALLOWED_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'application/pdf',
+  'text/plain'
+];
+
+const upload = multer({
+  dest: 'uploads/',
+  limits: {
+    fileSize: MAX_FILE_SIZE_BYTES
+  },
+  fileFilter: (req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      // reject file; req.file will be undefined
+      cb(null, false);
+    }
+  }
+});
 
 // Validation schemas for request bodies using Zod
 const SeverityEnum = z.enum(['low', 'medium', 'high', 'critical']);
@@ -34,10 +56,10 @@ const severityScoreMap: Record<Report["severity"], number> = {
 };
 
 // Simple in-memory audit log (for demonstration)
-interface AuditEntry { 
-  reportId: number; 
-  userId: string; 
-  changes: Record<string, [any, any]>; 
+interface AuditEntry {
+  reportId: number;
+  userId: string;
+  changes: Record<string, [any, any]>;
   timestamp: Date;
 }
 const auditLogs: AuditEntry[] = [];
@@ -71,22 +93,29 @@ router.get('/reports/:id', requireAuth, (req: Request, res: Response) => {
   if (!report) {
     return res.status(404).json({ error: 'Report not found' });
   }
-  const includeEntries = req.query.include === 'entries';
+  const includeParam = (req.query.include as string | undefined) || '';
+  const includeParts = includeParam.split(',').map(s => s.trim()).filter(Boolean);
+
+  const includeEntries = includeParts.includes('entries');
+  const includeAttachments = includeParts.includes('attachments');
+
 
   // Common fields + computed metrics
   const entryCount = report.entries.length;
   const severityScore = severityScoreMap[report.severity] || 0;
 
-  if (includeEntries) {
-    // Prepare entries with optional sorting and pagination
+  if (includeEntries || includeAttachments) {
     let entries = [...report.entries];
     const sortOrder = req.query.order === 'asc' ? 'asc' : 'desc';
+
+    // sort entries by createdAt
     entries.sort((a, b) => {
       return sortOrder === 'asc'
         ? a.createdAt.getTime() - b.createdAt.getTime()
         : b.createdAt.getTime() - a.createdAt.getTime();
     });
-    // Pagination: page & pageSize
+
+    // pagination logic for entries (same as you already have)
     let page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
     let pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : undefined;
     if (page && !pageSize) pageSize = 10;
@@ -98,21 +127,9 @@ router.get('/reports/:id', requireAuth, (req: Request, res: Response) => {
       const startIndex = (page - 1) * pageSize;
       entries = entries.slice(startIndex, startIndex + pageSize);
     }
-    // Return report with entries
-    return res.json({
-      id: report.id,
-      title: report.title,
-      description: report.description,
-      severity: report.severity,
-      createdAt: report.createdAt,
-      updatedAt: report.updatedAt,
-      entryCount: entryCount,
-      severityScore: severityScore,
-      entries: entries
-    });
-  } else {
-    // Return flattened summary (no entries array)
-    return res.json({
+
+    // build base shape
+    const response: any = {
       id: report.id,
       title: report.title,
       description: report.description,
@@ -121,9 +138,36 @@ router.get('/reports/:id', requireAuth, (req: Request, res: Response) => {
       updatedAt: report.updatedAt,
       entryCount: entryCount,
       severityScore: severityScore
-      // no 'entries' field in summary view
-    });
+    };
+
+    if (includeEntries) {
+      response.entries = entries;
+    }
+
+    if (includeAttachments) {
+      response.attachments = report.attachments.map(att => ({
+        filename: att.filename,
+        originalName: att.originalName,
+        mimetype: att.mimetype,
+        size: att.size,
+        uploadedAt: att.uploadedAt
+        // you *could* also add a fresh signed URL here if you want
+      }));
+    }
+
+    return res.json(response);
   }
+  // Summary view (no nested collections)
+  return res.json({
+    id: report.id,
+    title: report.title,
+    description: report.description,
+    severity: report.severity,
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt,
+    entryCount: entryCount,
+    severityScore: severityScore
+  });
 });
 
 /** POST /reports - Create a new report */
@@ -214,7 +258,11 @@ router.put('/reports/:id', requireAuth, (req: Request, res: Response) => {
   if (Object.keys(changes).length > 0) {
     report.updatedAt = new Date();
     auditLogs.push({ reportId: report.id, userId: req.user ? req.user.id : 'unknown', changes: changes, timestamp: new Date() });
-    console.log(`Audit log: user ${req.user?.id} updated report #${report.id}`, changes);
+    console.log(
+      `Audit log [${(req as any).requestId}]: user ${req.user?.id} updated report #${report.id}`,
+      changes
+    );
+
   } else {
     // Nothing actually changed
     return res.status(200).json({
@@ -228,6 +276,10 @@ router.put('/reports/:id', requireAuth, (req: Request, res: Response) => {
       severityScore: severityScoreMap[report.severity] || 0
     });
   }
+
+  const location = `${req.protocol}://${req.get('host')}/reports/${report.id}`;
+  res.location(location);
+
   // Respond with updated report (summary)
   return res.json({
     id: report.id,
@@ -246,16 +298,16 @@ router.post('/reports/:id/attachment', requireAuth, upload.single('file'), (req:
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     // Invalid ID format; cleanup uploaded file if any
-    if (req.file) fs.unlink(req.file.path, () => {});
+    if (req.file) fs.unlink(req.file.path, () => { });
     return res.status(400).json({ error: 'Invalid report ID format' });
   }
   const report = ReportStore.getReport(id);
   if (!report) {
-    if (req.file) fs.unlink(req.file.path, () => {}); // remove file if report doesn't exist
+    if (req.file) fs.unlink(req.file.path, () => { }); // remove file if report doesn't exist
     return res.status(404).json({ error: 'Report not found' });
   }
   if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
+    return res.status(400).json({ error: 'No file uploaded or file type not allowed' });
   }
   // Save attachment metadata
   const attachment = {
@@ -272,6 +324,39 @@ router.post('/reports/:id/attachment', requireAuth, upload.single('file'), (req:
   const downloadUrl = `${req.protocol}://${req.get('host')}/reports/${id}/attachment/${attachment.filename}?token=${encodeURIComponent(token)}`;
   return res.status(200).json({ downloadUrl });
 });
+
+/** POST /reports/:id/entries - Add an entry (comment) to a report */
+router.post('/reports/:id/entries', requireAuth, (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid report ID format' });
+  }
+
+  const report = ReportStore.getReport(id);
+  if (!report) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+
+  const { comment } = req.body;
+
+  if (!comment || typeof comment !== 'string' || comment.trim().length === 0) {
+    return res.status(400).json({ error: 'Comment is required' });
+  }
+
+  const entry = {
+    id: report.entries.length + 1,
+    author: req.user?.id || 'unknown',
+    comment,
+    createdAt: new Date()
+  };
+
+  report.entries.push(entry);
+  report.updatedAt = new Date();
+
+  return res.status(201).json(entry);
+});
+
 
 /** GET /reports/:id/attachment/:filename - Download an attachment using token */
 router.get('/reports/:id/attachment/:filename', (req: Request, res: Response, next: NextFunction) => {

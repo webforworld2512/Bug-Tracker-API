@@ -2,6 +2,7 @@ import express from 'express';
 import 'dotenv/config';
 import fs from 'fs';
 import multer from 'multer';
+import { randomUUID } from 'crypto';
 import reportsRouter from './routes/reports';
 import authRouter from './routes/auth';
 
@@ -42,6 +43,22 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
     console.error('Unexpected error:', err);
     return res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
   }
+  next();
+});
+
+app.use((req, res, next) => {
+  const requestId = randomUUID();
+  (req as any).requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+
+  console.log(JSON.stringify({
+    level: 'info',
+    msg: 'Incoming request',
+    requestId,
+    method: req.method,
+    path: req.path
+  }));
+
   next();
 });
 

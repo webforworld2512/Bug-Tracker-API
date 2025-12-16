@@ -44,7 +44,7 @@ export class ReportStore {
         return this.reports;
     }
 
-    /** Check if a title already exists (optionally excluding a given report ID) */
+    /** Check if a title already exists (optionally excluding a given report ID) - business invariant */
     static titleExists(title: string, excludeId?: number): boolean {
         return this.reports.some(report =>
             report.title.toLowerCase() === title.toLowerCase() && (excludeId ? report.id !== excludeId : true)
