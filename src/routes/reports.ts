@@ -23,6 +23,8 @@ const UpdateReportSchema = z.object({
   severity: SeverityEnum.optional()
 }).strict();
 
+const BulkReportsSchema = z.array(NewReportSchema);
+
 // Compute severity score mapping for output
 const severityScoreMap: Record<Report["severity"], number> = {
   low: 1,
@@ -39,6 +41,25 @@ interface AuditEntry {
   timestamp: Date;
 }
 const auditLogs: AuditEntry[] = [];
+
+/** GET /reports - Get all reports (summary view) */
+router.get('/reports', requireAuth, (req: Request, res: Response) => {
+  const reports = ReportStore.getAllReports();   // note: no ? and no ||
+
+  const result = reports.map(report => ({
+    id: report.id,
+    title: report.title,
+    description: report.description,
+    severity: report.severity,
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt,
+    entryCount: report.entries.length,
+    severityScore: severityScoreMap[report.severity] || 0
+  }));
+
+  return res.json(result);
+});
+
 
 /** GET /reports/:id - Get a report by ID (with optional ?include=entries) */
 router.get('/reports/:id', requireAuth, (req: Request, res: Response) => {
@@ -290,21 +311,76 @@ router.get('/reports/:id/attachment/:filename', (req: Request, res: Response, ne
   });
 });
 
-// // Only admins can delete a report, for example
-// router.delete('/reports/:id', requireAuth, requireRole('admin'), (req, res) => {
-//   // delete logic
-// });
+/** DELETE /reports/:id - Delete a report (admin only) */
+router.delete('/reports/:id', requireAuth, requireRole('admin'), (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid report ID format' });
+  }
 
-// export function requireRole(allowed: 'admin' | 'developer' | Array<'admin' | 'developer'>) {
-//   const roles = Array.isArray(allowed) ? allowed : [allowed];
+  const deleted = ReportStore.deleteReport(id);
 
-//   return (req: Request, res: Response, next: NextFunction) => {
-//     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-//     if (!roles.includes(req.user.role)) {
-//       return res.status(403).json({ error: 'Forbidden' });
-//     }
-//     next();
-//   };
-// }
+  if (!deleted) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+
+  // Option 1: simple success message
+  return res.status(200).json({ message: `Report ${id} deleted successfully` });
+
+  // Option 2: include id only
+  // return res.status(200).json({ deletedId: id });
+});
+
+/** POST /reports/bulk - Create multiple reports at once */
+router.post('/reports/bulk', requireAuth, (req: Request, res: Response) => {
+  const result = BulkReportsSchema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      error: "Invalid request format",
+      details: result.error.errors
+    });
+  }
+
+  const reportsData = result.data;
+
+  const createdReports: any[] = [];
+  const failedReports: any[] = [];
+
+  for (let i = 0; i < reportsData.length; i++) {
+    const data = reportsData[i];
+
+    // Check for duplicate title
+    if (ReportStore.titleExists(data.title)) {
+      failedReports.push({
+        index: i,
+        title: data.title,
+        reason: "Duplicate title"
+      });
+      continue;
+    }
+
+    const newReport = ReportStore.addReport({
+      title: data.title,
+      description: data.description,
+      severity: data.severity
+    });
+
+    createdReports.push({
+      id: newReport.id,
+      title: newReport.title,
+      severity: newReport.severity,
+      entryCount: 0,
+      severityScore: severityScoreMap[newReport.severity]
+    });
+  }
+
+  return res.status(201).json({
+    createdCount: createdReports.length,
+    failedCount: failedReports.length,
+    createdReports,
+    failedReports
+  });
+});
 
 export default router;
