@@ -17,8 +17,14 @@ const ALLOWED_MIME_TYPES = [
   'text/plain'
 ];
 
+// Use /tmp in serverless (Vercel), local uploads/ otherwise
+const UPLOAD_DIR = process.env.VERCEL ? '/tmp/uploads' : 'uploads';
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
 const upload = multer({
-  dest: 'uploads/',
+  dest: UPLOAD_DIR,
   limits: { fileSize: MAX_FILE_SIZE_BYTES },
   fileFilter: (req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
     if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {

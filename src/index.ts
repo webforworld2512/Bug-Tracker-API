@@ -9,11 +9,6 @@ import authRouter from './routes/auth';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Ensure uploads directory exists
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
-
 // Body parser middleware
 app.use(express.json());
 
